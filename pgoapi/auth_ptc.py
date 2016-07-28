@@ -28,7 +28,7 @@ import json
 import requests
 import time
 
-from auth import Auth
+from pgoapi.auth import Auth
 
 class AuthPtc(Auth):
 
@@ -75,13 +75,14 @@ class AuthPtc(Auth):
         ticket = None
         try:
             ticket = re.sub('.*ticket=', '', r1.history[0].headers['Location'])
-        except Exception,e:
+        except Exception as e:
             try:
                 self.log.error('Could not retrieve token: %s', r1.json()['errors'][0])
             except Exception as e:
                 self.log.error('Could not retrieve token! (%s)', str(e))
 
             if firstTry:
+                self.log.info('Retrying in 3 seconds...')
                 time.sleep(3)
                 return self.login_step2(jdata, username, password, False)
             else:
@@ -111,7 +112,8 @@ class AuthPtc(Auth):
         else:
             self.log.info('Seems not to be a PTC Session Token... login failed :( %s', access_token)
             if firstTry:
-                time.sleep(4)
+                self.log.info('Retrying in 3 seconds...')
+                time.sleep(3)
                 return self.login_oauth(ticket, False)
             else:
                 return False
