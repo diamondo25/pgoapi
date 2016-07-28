@@ -23,63 +23,74 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 Author: tjado <https://github.com/tejado>
 """
 
-from __future__ import absolute_import
-
 import re
 import json
-import logging
 import requests
+import time
 
-from pgoapi.auth import Auth
+from auth import Auth
 
 class AuthPtc(Auth):
 
     PTC_LOGIN_URL = 'https://sso.pokemon.com/sso/login?service=https%3A%2F%2Fsso.pokemon.com%2Fsso%2Foauth2.0%2FcallbackAuthorize'
     PTC_LOGIN_OAUTH = 'https://sso.pokemon.com/sso/oauth2.0/accessToken'
     PTC_LOGIN_CLIENT_SECRET = 'w8ScCUXJQc6kXKw8FiOhd8Fixzht18Dq3PEVkUCP5ZPxtgyWsbTvWHFLm2wNY0JR'
+    head = {'User-Agent': 'niantic'}
 
     def __init__(self):
         Auth.__init__(self)
-        
+
         self._auth_provider = 'ptc'
-        
+
         self._session = requests.session()
         self._session.verify = True
 
     def login(self, username, password):
+        self.log.info('PTC login for: %s', username)
 
-        self.log.info('Login for: %s', username)
-        
-        head = {'User-Agent': 'niantic'}
-        r = self._session.get(self.PTC_LOGIN_URL, headers=head)
+        r = self._session.get(self.PTC_LOGIN_URL, headers=self.head)
 
+        self.log.info('Response: %s: %s', str(r), r.content)
         try:
-            jdata = json.loads(r.content.decode('utf-8'))
-            data = {
-                'lt': jdata['lt'],
-                'execution': jdata['execution'],
-                '_eventId': 'submit',
-                'username': username,
-                'password': password,
-            }
+            jdata = json.loads(r.content)
         except ValueError as e:
-            self.log.error('Field missing in response: %s' % e)
+            self.log.error('%s... server seems to be down :(', str(e))
+            self.log.error('%s', r.content)
             return False
-        except KeyError as e:
-            self.log.error('Field missing in response.content: %s' % e)
-            return False
-        r1 = self._session.post(self.PTC_LOGIN_URL, data=data, headers=head)
 
+        time.sleep(1.5)
+        return self.login_step2(jdata, username, password, True)
+
+    def login_step2(self, jdata, username, password, firstTry):
+        data = {
+            'lt': jdata['lt'],
+            'execution': jdata['execution'],
+            '_eventId': 'submit',
+            'username': username,
+            'password': password[:15],
+        }
+        r1 = self._session.post(self.PTC_LOGIN_URL, data=data, headers=self.head)
+
+        self.log.info('Response: %s: %s', str(r1), r1.content)
         ticket = None
         try:
             ticket = re.sub('.*ticket=', '', r1.history[0].headers['Location'])
-        except Exception as e:
+        except Exception,e:
             try:
                 self.log.error('Could not retrieve token: %s', r1.json()['errors'][0])
             except Exception as e:
                 self.log.error('Could not retrieve token! (%s)', str(e))
-            return False
 
+            if firstTry:
+                time.sleep(3)
+                return self.login_step2(jdata, username, password, False)
+            else:
+                return False
+
+        time.sleep(1.5)
+        return self.login_oauth(ticket, True)
+
+    def login_oauth(self, ticket, firstTry):
         data1 = {
             'client_id': 'mobile-app_pokemon-go',
             'redirect_uri': 'https://www.nianticlabs.com/pokemongo/error',
@@ -87,9 +98,10 @@ class AuthPtc(Auth):
             'grant_type': 'refresh_token',
             'code': ticket,
         }
-        
+
         r2 = self._session.post(self.PTC_LOGIN_OAUTH, data=data1)
-        access_token = re.sub('&expires.*', '', r2.content.decode('utf-8'))
+        self.log.info('Response: %s: %s', str(r2), r2.content)
+        access_token = re.sub('&expires.*', '', r2.content)
         access_token = re.sub('.*access_token=', '', access_token)
 
         if '-sso.pokemon.com' in access_token:
@@ -97,10 +109,14 @@ class AuthPtc(Auth):
             self.log.debug('PTC Session Token: %s', access_token[:25])
             self._auth_token = access_token
         else:
-            self.log.info('Seems not to be a PTC Session Token... login failed :(')
-            return False
-        
+            self.log.info('Seems not to be a PTC Session Token... login failed :( %s', access_token)
+            if firstTry:
+                time.sleep(4)
+                return self.login_oauth(ticket, False)
+            else:
+                return False
+
         self._login = True
-        
+
         return True
-        
+
